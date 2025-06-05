@@ -73,7 +73,8 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
 
   // Number of ports of the vector register file
   localparam int unsigned NrWritePorts = 3;
-  localparam int unsigned NrReadPorts  = 6;
+  localparam int unsigned NrReadPorts  = 7;
+  // modified to 7
 
   /////////////
   // Signals //
@@ -361,11 +362,11 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vrf_we_o         (sb_we[VSLDU_VD_WD]                             ),
     .vrf_wbe_o        (vrf_wbe[VSLDU_VD_WD]                           ),
     .vrf_wvalid_i     (vrf_wvalid[VSLDU_VD_WD]                        ),
-    .vrf_raddr_o      (vrf_raddr[VSLDU_VS2_RD]                        ),
-    .vrf_re_o         (sb_re[VSLDU_VS2_RD]                            ),
-    .vrf_rdata_i      (vrf_rdata[VSLDU_VS2_RD]                        ),
-    .vrf_rvalid_i     (vrf_rvalid[VSLDU_VS2_RD]                       ),
-    .vrf_id_o         ({sb_id[SB_VSLDU_VD_WD], sb_id[SB_VSLDU_VS2_RD]})
+    .vrf_raddr_o      (vrf_raddr[VSLDU_VS1_RD:VSLDU_VS2_RD]           ),
+    .vrf_re_o         (sb_re[VSLDU_VS1_RD:VSLDU_VS2_RD]               ),
+    .vrf_rdata_i      (vrf_rdata[VSLDU_VS1_RD:VSLDU_VS2_RD]           ),
+    .vrf_rvalid_i     (vrf_rvalid[VSLDU_VS1_RD:VSLDU_VS2_RD]          ),
+    .vrf_id_o         ({sb_id[SB_VSLDU_VD_WD], sb_id[SB_VSLDU_VS1_RD:SB_VSLDU_VS2_RD]})
   );
 
   ////////////////

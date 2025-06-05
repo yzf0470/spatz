@@ -263,7 +263,8 @@ module spatz_controller
 
     for (int unsigned port = 0; port < NrVregfilePorts; port++)
       // Enable the VRF port if the dependant instructions wrote in the previous cycle
-      sb_enable_o[port] = sb_enable_i[port] && &(~scoreboard_q[sb_id_i[port]].deps | wrote_result_q) && (!(|scoreboard_q[sb_id_i[port]].deps) || !scoreboard_q[sb_id_i[port]].prevent_chaining);
+      sb_enable_o[port] = sb_enable_i[port] && &(~scoreboard_q[sb_id_i[port]].deps | wrote_result_q)
+                                            && (!(|scoreboard_q[sb_id_i[port]].deps) || !scoreboard_q[sb_id_i[port]].prevent_chaining);
 
     // Store the decisions
     if (sb_enable_o[SB_VFU_VD_WD]) begin
@@ -348,7 +349,7 @@ module spatz_controller
       end
 
       // Is this a risky instruction which should not chain?
-      if (spatz_req.op inside {VSLIDEUP, VLSE, VLXE, VSSE, VSXE})
+      if (spatz_req.op inside {VSLIDEUP, VLSE, VLXE, VSSE, VSXE})     // !!!!
         scoreboard_d[spatz_req.id].prevent_chaining = 1'b1;
 
       // Is this a narrowing or widening instruction?

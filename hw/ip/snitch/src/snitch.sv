@@ -2421,7 +2421,8 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
       riscv_instr::VFWMACC_VV,
       riscv_instr::VFWNMACC_VV,
       riscv_instr::VFWMSAC_VV,
-      riscv_instr::VFWNMSAC_VV: begin
+      riscv_instr::VFWNMSAC_VV,
+      riscv_instr::VRGATHER_VV: begin //modification
         if (RVV && RVF) begin
           write_rd        = 1'b0;
           uses_rd         = 1'b0;

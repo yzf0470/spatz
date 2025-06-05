@@ -113,6 +113,10 @@ package spatz_pkg;
     VMANDNOT, VMAND, VMOR, VMXOR, VMORNOT, VMNAND, VMNOR, VMXNOR,
     // Slide instructions
     VSLIDEUP, VSLIDEDOWN,
+
+    // Gather
+    VRGATHER,
+
     // Load instructions
     VLE, VLSE, VLXE,
     // Store instructions
@@ -303,7 +307,9 @@ package spatz_pkg;
     VFU_VD_RD,
     VLSU_VS2_RD,
     VLSU_VD_RD,
-    VSLDU_VS2_RD
+    VSLDU_VS2_RD,
+    // Add one port of indices for sldu.
+    VSLDU_VS1_RD // Use VS1 according to the v-extension
   } vreg_port_rd_e;
 
   typedef enum logic [1:0] {
@@ -319,6 +325,8 @@ package spatz_pkg;
     SB_VLSU_VS2_RD,
     SB_VLSU_VD_RD,
     SB_VSLDU_VS2_RD,
+    // Add one port of indices for sldu.
+    SB_VSLDU_VS1_RD, // Use VS1 according to the v-extension
     SB_VFU_VD_WD,
     SB_VLSU_VD_WD,
     SB_VSLDU_VD_WD

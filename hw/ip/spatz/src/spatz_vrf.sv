@@ -9,7 +9,7 @@
 module spatz_vrf
   import spatz_pkg::*;
   #(
-    parameter int unsigned NrReadPorts  = 5,
+    parameter int unsigned NrReadPorts  = 7,
     parameter int unsigned NrWritePorts = 3
   ) (
     input  logic                         clk_i,
@@ -35,6 +35,7 @@ module spatz_vrf
   ////////////////
 
   localparam int unsigned NrReadPortsPerBank = 3;
+
 
   //////////////
   // Typedefs //
@@ -133,7 +134,7 @@ module spatz_vrf
     rdata_o  = 'x;
 
     // For each port or each bank we have a priority based access scheme.
-    // Port zero can only be accessed by the VFU (vs2). Port one can be accessed by
+    // Port zero can be accessed by the VFU, VLSU and VSLDU (vs2). Port one can be accessed by
     // the VFU (vs1) and then by the slide unit. Port two can be accessed first by the
     // VFU (vd), then by the LSU.
     for (int unsigned bank = 0; bank < NrVRFBanks; bank++) begin
@@ -146,6 +147,10 @@ module spatz_vrf
         raddr[bank][0]        = f_vreg(raddr_i[VLSU_VS2_RD]);
         rdata_o[VLSU_VS2_RD]  = rdata[bank][0];
         rvalid_o[VLSU_VS2_RD] = 1'b1;
+      end else if (read_request[bank][VSLDU_VS2_RD]) begin
+        raddr[bank][0]         = f_vreg(raddr_i[VSLDU_VS2_RD]);
+        rdata_o[VSLDU_VS2_RD]  = rdata[bank][0];
+        rvalid_o[VSLDU_VS2_RD] = 1'b1;
       end
 
       // Bank read port 1 - Priority: VFU (1) -> VSLDU
@@ -153,10 +158,10 @@ module spatz_vrf
         raddr[bank][1]       = f_vreg(raddr_i[VFU_VS1_RD]);
         rdata_o[VFU_VS1_RD]  = rdata[bank][1];
         rvalid_o[VFU_VS1_RD] = 1'b1;
-      end else if (read_request[bank][VSLDU_VS2_RD]) begin
-        raddr[bank][1]         = f_vreg(raddr_i[VSLDU_VS2_RD]);
-        rdata_o[VSLDU_VS2_RD]  = rdata[bank][1];
-        rvalid_o[VSLDU_VS2_RD] = 1'b1;
+      end else if (read_request[bank][VSLDU_VS1_RD]) begin
+        raddr[bank][1]         = f_vreg(raddr_i[VSLDU_VS1_RD]);
+        rdata_o[VSLDU_VS1_RD]  = rdata[bank][1];
+        rvalid_o[VSLDU_VS1_RD] = 1'b1;
       end
 
       // Bank read port 2 - Priority: VFU (D) -> VLSU
@@ -212,7 +217,7 @@ module spatz_vrf
   if (NrWritePorts < 1)
     $error("[spatz_vrf] The number of write ports has to be greater than zero.");
 
-  if (NrReadPorts / NrReadPortsPerBank > NrVRFBanks)
+  if (NrReadPorts / NrReadPortsPerBank > NrVRFBanks) // (NrReadPorts/4 > 4)
     $error("[spatz_vrf] The number of vregfile banks needs to be increased to handle the number of read ports.");
 
 endmodule : spatz_vrf

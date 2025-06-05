@@ -25,11 +25,12 @@ module spatz_vsldu
     output logic             vrf_we_o,
     output vrf_be_t          vrf_wbe_o,
     input  logic             vrf_wvalid_i,
-    output spatz_id_t  [1:0] vrf_id_o,
-    output vrf_addr_t        vrf_raddr_o,
-    output logic             vrf_re_o,
-    input  vrf_data_t        vrf_rdata_i,
-    input  logic             vrf_rvalid_i
+
+    output spatz_id_t  [2:0] vrf_id_o,
+    output vrf_addr_t  [1:0] vrf_raddr_o, // source: 0, index: 1
+    output logic       [1:0] vrf_re_o,
+    input  vrf_data_t  [1:0] vrf_rdata_i,
+    input  logic       [1:0] vrf_rvalid_i
   );
 
 // Include FF
@@ -58,10 +59,16 @@ module spatz_vsldu
     .ready_i(spatz_req_ready                                )
   );
 
+  logic [1:0] sparse_unit_effective_element_num;
+  logic [2:0] sparse_unit_total_element_num;
+  assign sparse_unit_effective_element_num = 2'd2;
+  assign sparse_unit_total_element_num     = 3'd4;
+
   // Convert the vl to number of bytes for all element widths
   always_comb begin: proc_spatz_req
     spatz_req_d = spatz_req_i;
-
+    // spatz_req_d: vl counts by Bytes
+    // spatz_req_i: vl counts by elements;
     unique case (spatz_req_i.vtype.vsew)
       EW_8: begin
         spatz_req_d.vl     = spatz_req_i.vl;
@@ -94,6 +101,18 @@ module spatz_vsldu
   //  Output Register  //
   ///////////////////////
 
+  // Added
+  // Is the instruction gather
+  logic is_gather;
+  assign is_gather = spatz_req_valid && (spatz_req.op == VRGATHER);
+
+  vrf_data_t gather_data_d,  gather_data_q;
+  vrf_data_t gather_partial_data;
+  logic      gather_valid_d, gather_valid_q;
+  logic      gather_finished_d, gather_finished_q;
+  logic      half_gathered_d, half_gathered_q;
+  `FF(half_gathered_q, half_gathered_d, '0)
+
   typedef struct packed {
     vrf_addr_t waddr;
     vrf_data_t wdata;
@@ -103,6 +122,40 @@ module spatz_vsldu
   vrf_req_t vrf_req_d, vrf_req_q;
   logic     vrf_req_valid_d, vrf_req_ready_d;
   logic     vrf_req_valid_q, vrf_req_ready_q;
+
+  always_comb begin: gather_output_comb
+
+    if (spatz_req_valid && is_gather) begin
+      if (vrf_rvalid_i[0] && vrf_rvalid_i[1]) begin
+        gather_data_d  = gather_valid_q ? gather_partial_data : (gather_data_q | gather_partial_data);
+        gather_valid_d = half_gathered_q || gather_finished_d;
+      end else if (half_gathered_d) begin
+        gather_data_d  = gather_data_q;
+        gather_valid_d = '0;
+      end else begin
+        gather_data_d  = '0;
+        gather_valid_d = '0;
+      end
+    end else if (gather_finished_q) begin
+      gather_data_d  = '0;
+      gather_valid_d = '0;
+    end else begin
+      gather_data_d  = gather_data_q;
+      gather_valid_d = gather_valid_q;
+    end
+  end: gather_output_comb
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      gather_data_q     <= '0;
+      gather_valid_q    <= '0;
+      gather_finished_q <= '0;
+    end else begin
+      gather_data_q     <= gather_data_d;
+      gather_valid_q    <= gather_valid_d;
+      gather_finished_q <= gather_finished_d;
+    end
+  end
 
   spill_register #(
     .T(vrf_req_t)
@@ -122,6 +175,8 @@ module spatz_vsldu
   assign vrf_wbe_o       = vrf_req_q.wbe;
   assign vrf_we_o        = vrf_req_valid_q;
   assign vrf_id_o[0]     = spatz_req.id; // ID of the instruction currently reading elements
+  assign vrf_id_o[1]     = (spatz_req.op == VRGATHER) ? spatz_req.id : '0;
+                                         // If gather, ID of the instruction currently reading elements
   assign vrf_req_ready_q = vrf_wvalid_i;
 
   /////////////
@@ -204,7 +259,7 @@ module spatz_vsldu
     end
 
     // Clear the prefetch register
-    if (prefetch_q && vrf_re_o && vrf_rvalid_i)
+    if (prefetch_q && vrf_re_o[0] && vrf_rvalid_i[0]) // specify vrf_re_o->vrf_re_o[0]
       prefetch_d = 1'b0;
   end
 
@@ -215,8 +270,8 @@ module spatz_vsldu
   // Vector register file counter signals
   logic  vreg_counter_en;
   vlen_t vreg_counter_delta;
-  vlen_t vreg_counter_d;
-  vlen_t vreg_counter_q;
+  logic [$bits(vlen_t)-1 + $clog2(VRFWordBWidth)+6 : 0] vreg_counter_d;
+  logic [$bits(vlen_t)-1 + $clog2(VRFWordBWidth)+6 : 0] vreg_counter_q;
   `FF(vreg_counter_q, vreg_counter_d, '0)
 
   // Are we on the first/last VRF operation?
@@ -232,55 +287,70 @@ module spatz_vsldu
   `FF(vreg_operation_first_q, vreg_operation_first_d, VREG_IDLE)
 
   always_comb begin: vsldu_vreg_counter_proc
-    // How many elements are left to do
-    automatic int unsigned delta = spatz_req.vl - vreg_counter_q;
+    // How many bytes are left to do
+    automatic int unsigned delta = spatz_req.vl - vreg_counter_q; // value is in bytes
 
     // Default assignments
     vreg_counter_en        = 1'b0;
     vreg_counter_d         = vreg_counter_q;
     vreg_counter_delta     = '0;
     vreg_operation_first_d = vreg_operation_first_q;
+    vreg_operation_first   = '0;
 
-    // Do we have a new request?
-    if (new_vsldu_request) begin
-      // Load vstart into the counter
-      vreg_counter_d = spatz_req.vstart;
-      if (!spatz_req.op_sld.insert && spatz_req.vstart < slide_amount_d && is_slide_up)
-        vreg_counter_d = slide_amount_d;
+    half_gathered_d          = half_gathered_q;
+
+    if(!is_gather) begin
+      // Do we have a new request?
+      if (new_vsldu_request) begin
+        // Load vstart into the counter
+        vreg_counter_d = spatz_req.vstart;
+        if (!spatz_req.op_sld.insert && spatz_req.vstart < slide_amount_d && is_slide_up)
+          vreg_counter_d = slide_amount_d;
+      end
+
+      // Is this the first/last operation?
+      case (vreg_operation_first_q)
+        VREG_IDLE: begin
+          // Wait until our first write operation
+          vreg_operation_first = spatz_req_valid && !prefetch_q && new_vsldu_request_q;
+          if (spatz_req_valid && (vreg_counter_q <= slide_amount_q)) // maybe some problem with the last "()"
+            vreg_operation_first_d = VREG_WAIT_FIRST_WRITE;
+
+          if (vrf_req_valid_d && vrf_req_ready_d)
+            vreg_operation_first_d = VREG_IDLE;
+        end
+        VREG_WAIT_FIRST_WRITE: begin
+          vreg_operation_first = spatz_req_valid && !prefetch_q;
+          if (vrf_req_valid_d && vrf_req_ready_d)
+            vreg_operation_first_d = VREG_IDLE;
+        end
+        default:;
+      endcase
     end
 
-    // Is this the first/last operation?
-    case (vreg_operation_first_q)
-      VREG_IDLE: begin
-        // Wait until our first write operation
-        vreg_operation_first = spatz_req_valid && !prefetch_q && new_vsldu_request_q;
-        if (spatz_req_valid && vreg_counter_q <= slide_amount_q)
-          vreg_operation_first_d = VREG_WAIT_FIRST_WRITE;
-
-        if (vrf_req_valid_d && vrf_req_ready_d)
-          vreg_operation_first_d = VREG_IDLE;
-      end
-      VREG_WAIT_FIRST_WRITE: begin
-        vreg_operation_first = spatz_req_valid && !prefetch_q;
-        if (vrf_req_valid_d && vrf_req_ready_d)
-          vreg_operation_first_d = VREG_IDLE;
-      end
-      default:;
-    endcase
-    vreg_operation_last = spatz_req_valid && !prefetch_q && (delta <= (VRFWordBWidth - vreg_counter_q[idx_width(VRFWordBWidth)-1:0]));
+    vreg_operation_last  = spatz_req_valid && (is_gather || !prefetch_q)
+                        && (delta <= (VRFWordBWidth - vreg_counter_q[idx_width(VRFWordBWidth)-1:0]));
 
     // How many operations are we calculating now?
     if (spatz_req_valid) begin
-      if (vreg_operation_last)
-        vreg_counter_delta = delta;
-      else if (vreg_operation_first)
-        vreg_counter_delta = VRFWordBWidth - vreg_counter_d[idx_width(VRFWordBWidth)-1:0];
-      else
-        vreg_counter_delta = VRFWordBWidth;
+      if (!is_gather) begin
+        if (vreg_operation_last)
+          vreg_counter_delta = delta;
+        else if (vreg_operation_first)
+          vreg_counter_delta = VRFWordBWidth - vreg_counter_d[idx_width(VRFWordBWidth)-1:0];
+        else
+          vreg_counter_delta = VRFWordBWidth;
+      end else begin
+          vreg_counter_delta = VRFWordBWidth;
+      end
     end
 
     // Do we have to increment the counter?
-    vreg_counter_en = ((spatz_req.use_vs2 && vrf_re_o && vrf_rvalid_i) || !spatz_req.use_vs2) && ((spatz_req.use_vd && vrf_req_valid_d && vrf_req_ready_d) || !spatz_req.use_vd);
+    vreg_counter_en =
+                   ((spatz_req.use_vs2 && vrf_re_o[0] && vrf_rvalid_i[0]) || !spatz_req.use_vs2)
+                   && (is_gather ? ((spatz_req.use_vs1 && vrf_re_o[1] && vrf_rvalid_i[1]) || !spatz_req.use_vs1) : 1'b1)
+                   && ((spatz_req.use_vd && ((is_gather && ~gather_valid_d) || (vrf_req_valid_d && vrf_req_ready_d))) || !spatz_req.use_vd);
+
     if (vreg_counter_en) begin
       if (vreg_operation_last)
         // Reset the counter
@@ -290,8 +360,21 @@ module spatz_vsldu
         vreg_counter_d = vreg_counter_q + vreg_counter_delta;
     end
 
+    if (is_gather && vreg_counter_en) begin
+      if (vreg_operation_last) begin
+        // Reset the counter
+        half_gathered_d = '0;
+      end else begin
+        // Increment the counter
+        half_gathered_d = ~half_gathered_q;
+      end
+    end
+
     // Did we finish?
     vreg_operations_finished = vreg_operation_last && vreg_counter_en;
+    gather_finished_d        = spatz_req_valid && is_gather && vreg_operation_last
+                            && ((spatz_req.use_vs2 && vrf_re_o[0] && vrf_rvalid_i[0]) || !spatz_req.use_vs2)
+                            && ((spatz_req.use_vs1 && vrf_re_o[1] && vrf_rvalid_i[1]) || !spatz_req.use_vs1);
   end: vsldu_vreg_counter_proc
 
   always_comb begin: vsldu_rsp
@@ -304,7 +387,7 @@ module spatz_vsldu
     vsldu_rsp_o       = '0;
 
     // ID of the instruction currently writing elements
-    vrf_id_o[1] = spatz_req.id;
+    vrf_id_o[2] = spatz_req.id;
 
     case (state_q)
       VSLDU_RUNNING: begin
@@ -316,7 +399,7 @@ module spatz_vsldu
       end
 
       VSLDU_WAIT_WVALID: begin
-        vrf_id_o[1] = op_id_q; // ID of the instruction currently writing to the VRF
+        vrf_id_o[2] = op_id_q; // ID of the instruction currently writing to the VRF
 
         if (vrf_wvalid_i) begin
           vsldu_rsp_valid_o = 1'b1;
@@ -351,98 +434,161 @@ module spatz_vsldu
 
   // Data signals for different stages of the shift
   vrf_data_t data_in, data_out, data_low, data_high;
+  logic [$bits(vlen_t)-1 + $clog2(VRFWordBWidth)+2:0] sparse_idx;
 
   always_comb begin
+
     shift_overflow_d = shift_overflow_q;
+    gather_partial_data  = '0;
 
-    data_in   = '0;
-    data_out  = '0;
-    data_high = '0;
-    data_low  = '0;
+    if (!is_gather) begin
 
-    vrf_req_d.wbe   = '0;
-    vrf_req_d.wdata = '0;
+      data_in   = '0;
+      data_out  = '0;
+      data_high = '0;
+      data_low  = '0;
 
-    // Is there a vector instruction executing now?
-    if (!is_vl_zero) begin
-      if (is_slide_up && spatz_req.op_sld.insert && spatz_req.op_sld.vmv) begin
-        for (int b_src = 0; b_src < VRFWordBWidth; b_src++)
-          data_in[(VRFWordBWidth-b_src-1)*8 +: 8] = spatz_req.rs1[b_src*8%ELEN +: 8];
-      end else if (is_slide_up) begin
-        // If we have a slide up operation, flip all bytes around (d[-i] = d[i])
-        for (int b_src = 0; b_src < VRFWordBWidth; b_src++)
-          data_in[(VRFWordBWidth-b_src-1)*8 +: 8] = vrf_rdata_i[b_src*8 +: 8];
-      end else begin
-        data_in = vrf_rdata_i;
+      vrf_req_d.wbe   = '0;
+      vrf_req_d.wdata = '0;
 
-        // If we are already over the MAXVL, all continuing elements are zero
-        if ((vreg_counter_q >= MAXVL - slide_amount_q) || (vreg_operation_last && spatz_req.op_sld.insert))
-          data_in = '0;
-      end
-
-      // Shift direct elements into the correct position
-      for (int b_src = 0; b_src < VRFWordBWidth; b_src++)
-        if (b_src >= in_elem_offset) begin
-          // high elements
-          for (int b_dst = 0; b_dst <= b_src; b_dst++)
-            if (b_src-b_dst == in_elem_offset)
-              data_high[b_dst*8 +: 8] = data_in[b_src*8 +: 8];
+      // Is there a vector instruction executing now?
+      if (!is_vl_zero) begin
+        if (is_slide_up && spatz_req.op_sld.insert && spatz_req.op_sld.vmv) begin
+          for (int b_src = 0; b_src < VRFWordBWidth; b_src++)
+            data_in[(VRFWordBWidth-b_src-1)*8 +: 8] = spatz_req.rs1[b_src*8%ELEN +: 8];
+        end else if (is_slide_up) begin
+          // If we have a slide up operation, flip all bytes around (d[-i] = d[i])
+          for (int b_src = 0; b_src < VRFWordBWidth; b_src++)
+            data_in[(VRFWordBWidth-b_src-1)*8 +: 8] = vrf_rdata_i[0][b_src*8 +: 8];
         end else begin
-          // low elements
-          for (int b_dst = b_src; b_dst < VRFWordBWidth; b_dst++)
-            if (b_dst-b_src == in_elem_flipped_offset)
-              data_low[b_dst*8 +: 8] = data_in[b_src*8 +: 8];
+          data_in = vrf_rdata_i[0];
+
+          // If we are already over the MAXVL, all continuing elements are zero
+          if ((vreg_counter_q >= MAXVL - slide_amount_q) || (vreg_operation_last && spatz_req.op_sld.insert))
+            data_in = '0;
         end
 
-      // Combine overflow and direct elements together
-      if (is_slide_up) begin
-        if (vreg_counter_en || prefetch_q)
-          shift_overflow_d = data_low;
-        data_out = data_high | shift_overflow_q;
-      end else begin
-        if (vreg_counter_en || prefetch_q)
-          shift_overflow_d = data_high;
-        data_out = data_low | shift_overflow_q;
-
-        // Insert rs1 element at the last position
-        if (spatz_req.op_sld.insert && vreg_operation_last) begin
-          for (int b = 0; b < VRFWordBWidth; b++)
-            if (b >= (vreg_counter_q[$clog2(VRFWordBWidth)-1:0] + vreg_counter_delta - (4'b0001<<spatz_req.vtype.vsew)))
-              data_out[b*8 +: 8] = data_low[b*8 +: 8];
-          data_out = data_out | (vrf_data_t'(spatz_req.rs1) << 8*(vreg_counter_q[$clog2(VRFWordBWidth)-1:0]+vreg_counter_delta-(4'b0001<<spatz_req.vtype.vsew)));
+        // Shift direct elements into the correct position
+        for (int b_src = 0; b_src < VRFWordBWidth; b_src++) begin
+          if (b_src >= in_elem_offset) begin
+            // high elements
+            for (int b_dst = 0; b_dst <= b_src; b_dst++)
+              if (b_src-b_dst == in_elem_offset)
+                data_high[b_dst*8 +: 8] = data_in[b_src*8 +: 8];
+          end else begin
+            // low elements
+            for (int b_dst = b_src; b_dst < VRFWordBWidth; b_dst++)
+              if (b_dst-b_src == in_elem_flipped_offset)
+                data_low[b_dst*8 +: 8] = data_in[b_src*8 +: 8];
+          end
         end
-      end
 
-      // If we have a slide up operation, flip all bytes back around (d[i] = d[-i])
-      if (is_slide_up) begin
-        for (int b_src = 0; b_src < VRFWordBWidth; b_src++)
-          vrf_req_d.wdata[(VRFWordBWidth-b_src-1)*8 +: 8] = data_out[b_src*8 +: 8];
+        // Combine overflow and direct elements together
+        if (is_slide_up) begin
+          if (vreg_counter_en || prefetch_q)
+            shift_overflow_d = data_low;
+          data_out = data_high | shift_overflow_q;
+        end else begin
+          if (vreg_counter_en || prefetch_q)
+            shift_overflow_d = data_high;
+          data_out = data_low | shift_overflow_q;
+
+          // Insert rs1 element at the last position
+          if (spatz_req.op_sld.insert && vreg_operation_last) begin
+            for (int b = 0; b < VRFWordBWidth; b++)
+              if (b >= (vreg_counter_q[$clog2(VRFWordBWidth)-1:0] + vreg_counter_delta - (4'b0001<<spatz_req.vtype.vsew)))
+                data_out[b*8 +: 8] = data_low[b*8 +: 8];
+            data_out = data_out | (vrf_data_t'(spatz_req.rs1) << 8*(vreg_counter_q[$clog2(VRFWordBWidth)-1:0]+vreg_counter_delta-(4'b0001<<spatz_req.vtype.vsew)));
+          end
+        end
+
+        // If we have a slide up operation, flip all bytes back around (d[i] = d[-i])
+        if (is_slide_up) begin
+          for (int b_src = 0; b_src < VRFWordBWidth; b_src++)
+            vrf_req_d.wdata[(VRFWordBWidth-b_src-1)*8 +: 8] = data_out[b_src*8 +: 8];
 
         // Insert rs1 element at the first position
         if (spatz_req.op_sld.insert && !spatz_req.op_sld.vmv && vreg_operation_first && spatz_req.vstart == 'd0)
           vrf_req_d.wdata = vrf_req_d.wdata | vrf_data_t'(spatz_req.rs1);
-      end else begin
-        vrf_req_d.wdata = data_out;
+        end else begin
+          vrf_req_d.wdata = data_out;
+        end
+
+        // Create byte enable mask
+        for (int i = 0; i < VRFWordBWidth; i++)
+          vrf_req_d.wbe[i] = i < vreg_counter_delta;
+
+        // Special byte enable mask case when we are operating on the first register element.
+        if (vreg_operation_first && is_slide_up)
+          for (int i = 0; i < VRFWordBWidth; i++)
+            vrf_req_d.wbe[i] = (spatz_req.op_sld.insert || (i >= slide_amount_d[$clog2(VRFWordBWidth)-1:0])) & (i < (vreg_counter_q[$clog2(VRFWordBWidth)-1:0] + vreg_counter_delta));
       end
 
-      // Create byte enable mask
-      for (int i = 0; i < VRFWordBWidth; i++)
-        vrf_req_d.wbe[i] = i < vreg_counter_delta;
+      // Reset overflow register when finished
+      if (vreg_operations_finished)
+        shift_overflow_d = '0;
 
-      // Special byte enable mask case when we are operating on the first register element.
-      if (vreg_operation_first && is_slide_up)
+    end else begin
+
+      data_high            = '0;
+      data_low             = '0;
+      vrf_req_d.wbe        = '0;
+      vrf_req_d.wdata      = '0;
+      sparse_idx           = vreg_counter_q[$bits(vlen_t)-1 + $clog2(VRFWordBWidth)+6:4];
+
+
+      if (!is_vl_zero) begin
+
+        if ((sparse_unit_effective_element_num == 1) && (sparse_unit_total_element_num == 2)) begin
+          unique case (vrf_rdata_i[1][sparse_idx * 2 +: 2])
+            2'd0: data_low[63:0]  = vrf_rdata_i[0][63:0];
+            2'd1: data_low[63:0]  = vrf_rdata_i[0][127:64];
+            default:;
+          endcase
+          unique case (vrf_rdata_i[1][(sparse_idx+1) * 2 +: 2])
+            2'd0: data_high[63:0] = vrf_rdata_i[0][191:128];
+            2'd1: data_high[63:0] = vrf_rdata_i[0][255:192];
+            default:;
+          endcase
+        end else if ((sparse_unit_effective_element_num == 2) && (sparse_unit_total_element_num == 4)) begin
+          unique case (vrf_rdata_i[1][sparse_idx * 2 +: 2])
+            2'd0: data_low[63:0]  = vrf_rdata_i[0][63:0];
+            2'd1: data_low[63:0]  = vrf_rdata_i[0][127:64];
+            2'd2: data_low[63:0]  = vrf_rdata_i[0][191:128];
+            2'd3: data_low[63:0]  = vrf_rdata_i[0][255:192];
+            default:;
+          endcase
+          unique case (vrf_rdata_i[1][(sparse_idx+1) * 2 +: 2])
+            2'd0: data_high[63:0] = vrf_rdata_i[0][63:0];
+            2'd1: data_high[63:0] = vrf_rdata_i[0][127:64];
+            2'd2: data_high[63:0] = vrf_rdata_i[0][191:128];
+            2'd3: data_high[63:0] = vrf_rdata_i[0][255:192];
+            default:;
+          endcase
+        end
+
+        case (sparse_idx[1:0])
+          2'd0 : gather_partial_data[127:0]   = {data_high[63:0], data_low[63:0]};
+          2'd2 : gather_partial_data[255:128] = {data_high[63:0], data_low[63:0]};
+        endcase
+
+        vrf_req_d.wdata = gather_data_d;
+
         for (int i = 0; i < VRFWordBWidth; i++)
-          vrf_req_d.wbe[i] = (spatz_req.op_sld.insert || (i >= slide_amount_d[$clog2(VRFWordBWidth)-1:0])) & (i < (vreg_counter_q[$clog2(VRFWordBWidth)-1:0] + vreg_counter_delta));
-    end
+          vrf_req_d.wbe[i] = i < vreg_counter_delta;
 
-    // Reset overflow register when finished
-    if (vreg_operations_finished)
-      shift_overflow_d = '0;
+      end
+    end
   end
 
   // VRF signals
-  assign vrf_re_o        = spatz_req.use_vs2 && (spatz_req_valid || prefetch_q) && running_q[spatz_req.id];
-  assign vrf_req_valid_d = spatz_req_valid && spatz_req.use_vd && (vrf_re_o || !spatz_req.use_vs2) && (vrf_rvalid_i || !spatz_req.use_vs2) && !prefetch_q;
+
+  assign vrf_re_o[0]       = spatz_req.use_vs2 && (spatz_req_valid || (!is_gather && prefetch_q)) && running_q[spatz_req.id];
+  assign vrf_re_o[1]       = spatz_req.use_vs1 && spatz_req_valid && running_q[spatz_req.id];
+  assign vrf_req_valid_d   = spatz_req_valid
+                             && spatz_req.use_vd
+                             && (is_gather ? gather_valid_d :
+                             (vrf_re_o[0] || !spatz_req.use_vs2) && (vrf_rvalid_i[0] || !spatz_req.use_vs2) && !prefetch_q);
 
   ////////////////////////
   // Address Generation //
@@ -451,9 +597,17 @@ module spatz_vsldu
   vlen_t sld_offset_rd;
 
   always_comb begin
-    sld_offset_rd   = is_slide_up ? (prefetch_q ? -slide_amount_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)] - 1 : -slide_amount_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)]) : prefetch_q ? slide_amount_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)] : slide_amount_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)] + 1;
-    vrf_raddr_o     = {spatz_req.vs2, $clog2(NrWordsPerVector)'(1'b0)} + vreg_counter_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)] + sld_offset_rd;
-    vrf_req_d.waddr = {spatz_req.vd, $clog2(NrWordsPerVector)'(1'b0)} + vreg_counter_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)];
+    sld_offset_rd   = is_slide_up ? (prefetch_q ? -slide_amount_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)] - 1
+                                                : -slide_amount_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)])
+                                  :  prefetch_q ? slide_amount_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)]
+                                                : slide_amount_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)] + 1;
+    vrf_raddr_o[0]  = {spatz_req.vs2, $clog2(NrWordsPerVector)'(1'b0)} + vreg_counter_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)]
+                    + (is_gather ? '0 : sld_offset_rd);
+    vrf_raddr_o[1]  = {spatz_req.vs1, $clog2(NrWordsPerVector)'(1'b0)} + vreg_counter_q[$bits(vlen_t)-1 + $clog2(VRFWordBWidth)+6:$clog2(VRFWordBWidth)+6];
+    // vreg_counter_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)+6] is the same as vreg_counter_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)]/64
+    vrf_req_d.waddr = {spatz_req.vd,  $clog2(NrWordsPerVector)'(1'b0)}
+                    + (is_gather ? vreg_counter_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)+1]
+                                 : vreg_counter_q[$bits(vlen_t)-1:$clog2(VRFWordBWidth)]);
   end
 
 endmodule : spatz_vsldu

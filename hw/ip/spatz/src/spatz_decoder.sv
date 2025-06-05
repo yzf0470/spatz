@@ -53,6 +53,7 @@ module spatz_decoder
       automatic logic [6:0] opcode = decoder_req_i.instr[6:0];
 
       unique casez (decoder_req_i.instr)
+
         // Load and store instructions
         riscv_instr::VLE8_V,
         riscv_instr::VLE16_V,
@@ -335,7 +336,8 @@ module spatz_decoder
         riscv_instr::VSLIDE1UP_VX,
         riscv_instr::VSLIDEDOWN_VX,
         riscv_instr::VSLIDEDOWN_VI,
-        riscv_instr::VSLIDE1DOWN_VX: begin
+        riscv_instr::VSLIDE1DOWN_VX,
+        riscv_instr::VRGATHER_VV: begin
           automatic opcodev_func3_e func3 = opcodev_func3_e'(decoder_req_i.instr[14:12]);
           automatic vreg_t arith_s1       = decoder_req_i.instr[19:15];
           automatic vreg_t arith_s2       = decoder_req_i.instr[24:20];
@@ -784,6 +786,13 @@ module spatz_decoder
               if (func3 == OPIVI) begin
                 spatz_req.rs1 = elen_t'(arith_s1);
               end
+            end
+
+            // Vector Gathering
+            // Add
+            riscv_instr::VRGATHER_VV: begin
+              spatz_req.op            = VRGATHER;
+              spatz_req.ex_unit       = SLD;
             end
 
             default: illegal_instr = 1'b1;
