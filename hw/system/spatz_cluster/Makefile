@@ -30,8 +30,12 @@ VLOG      = questa-2021.3-kgf vlog
 VSIM_HOME = /usr/pack/questa-2021.3-kgf/questasim
 
 VSIM_FLAGS += -t 1ps
-VSIM_FLAGS += -voptargs=+acc
 VSIM_FLAGS += -do "log -r /*; source ${SPATZ_CLUSTER_DIR}/script/vsim/wave.tcl; run -a"
+
+# Fast simulation for command line simulation
+VSIM_FLAGS_SHELL = $(VSIM_FLAGS) -voptargs=-O5
+# Full signal visibility for GUI simulation
+VSIM_FLAGS_GUI   = $(VSIM_FLAGS) -voptargs=+acc
 
 VLOG_FLAGS += -svinputport=compat
 VLOG_FLAGS += -override_timescale 1ns/1ps
@@ -146,7 +150,8 @@ clean.vsim:
 ## Build compilation script and compile all sources for VCS simulation
 bin/spatz_cluster.vcs: test/bootrom.bin work-vcs/compile.sh work/lib/libfesvr_vcs.a ${TB_DIR}/common_lib.cc test/bootdata.cc test/bootrom.bin test/uartdpi/uartdpi.c
 	mkdir -p bin
-	vcs -Mlib=work-vcs -Mdir=work-vcs -debug_access+all -fgp -kdb +vcs+fsdbon -o bin/spatz_cluster.vcs -j4 -cc $(CC) -cpp $(CXX) \
+	# Default to fast simulation flags, use `-debug_access+all +vcs+fsdbon` for waveform debugging
+	vcs -Mlib=work-vcs -Mdir=work-vcs -O2 -debug_access=r -debug_region=1,tb_bin -kdb -o $@ -j4 -cc $(CC) -cpp $(CXX) \
 		-assert disable_cover -override_timescale=1ns/1ps -full64 tb_bin ${TB_DIR}/rtl_lib.cc ${TB_DIR}/common_lib.cc test/bootdata.cc test/uartdpi/uartdpi.c \
 		-CFLAGS "-I${MKFILE_DIR} -I${MKFILE_DIR}/test -I${FESVR}/include -I${TB_DIR} -Itest/uartdpi" -LDFLAGS "-L${FESVR}/lib" -lfesvr_vcs -lutil
 
