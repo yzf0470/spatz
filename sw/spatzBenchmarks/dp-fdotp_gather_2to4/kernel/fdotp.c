@@ -23,6 +23,7 @@ double fdotp_v64b(const double *a, const double *b, const int *idx_a, unsigned i
   const unsigned int orig_avl = avl;
   unsigned int vl_idx, vl_dense, vl_compressed;
   double red;
+  int flag = 1;
 
   // Clean the accumulator
   asm volatile("vmv.s.x v0, zero");
@@ -31,18 +32,19 @@ double fdotp_v64b(const double *a, const double *b, const int *idx_a, unsigned i
   do {
 
     // Set the vl, load chunk a, b and idx_a
+    asm volatile("vsetvli %0, %1, e32, m4, ta, ma" : "=r"(vl_idx) : "r"(1));
+    asm volatile("vle32.v v12, (%0)" ::"r"(idx_a)); // idx of src1
+
     asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl_dense) : "r"(2*avl));
     asm volatile("vle64.v v8, (%0)" ::"r"(b)); // src2, originally dense
-
-    asm volatile("vsetvli %0, %1, e32, m4, ta, ma" : "=r"(vl_idx) : "r"(vl_dense/32));
-    asm volatile("vle32.v v12, (%0)" ::"r"(idx_a)); // idx of src1
     
-    asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl_compressed) : "r"(vl_dense));
-    asm volatile("vle64.v v4, (%0)" ::"r"(a)); // src1, compressed
-
     // Gather b 
     asm volatile("vrgather.vv v16, v8, v12");
-    
+
+    asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl_compressed) : "r"(vl_dense/2));
+    //asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl_compressed) : "r"(vl_dense));
+    asm volatile("vle64.v v4, (%0)" ::"r"(a)); // src1, compressed
+
     // Multiply and accumulate
     if (avl == orig_avl) {
       asm volatile("vfmul.vv v20, v16, v4");

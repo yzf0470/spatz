@@ -19,8 +19,6 @@
 #ifndef _GEMV_H
 #define _GEMV_H
 
-void sparsemv_m4_v64b(double *a, double* b, int *idx_a, double* c, int M, int N);
-
-void sparsemv_m4_v64b_v2(double *a, double* b, int *idx_a, double* c, int M, int N);
+void sparsemv_v64b(double *a, double* b, int *idx_a, double* c, int M, int N);
 
 #endif

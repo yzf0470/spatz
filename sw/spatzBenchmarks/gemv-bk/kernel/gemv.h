@@ -19,6 +19,6 @@
 #ifndef _GEMV_H
 #define _GEMV_H
 
-void sparsemv_v64b(double *a, double* b, int *idx_a, double* c, int M, int N);
+void gemv_v64b(double *a, double* b, double* c, int M, int N);
 
 #endif

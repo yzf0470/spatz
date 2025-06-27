@@ -61,6 +61,7 @@ def emit_header_file(layer_type: str, **kwargs):
 #         "compressed_A": compressed_mat_A,
 #         "idx_mat_A": idx_mat_A,
 #         "idx_vec_B": idx_vec_B,
+#         "packed_idx_mat_A_origin": packed_idx_mat_A_origin,
 #         "packed_idx_mat_A": packed_idx_mat_A,
 #         "packed_idx_vec_B": packed_idx_vec_B,
 #         "result": result,
@@ -74,9 +75,11 @@ def emit_header_file(layer_type: str, **kwargs):
 def emit_sparsemv_layer(name="sparsemv", **kwargs):
     mat_A = kwargs["A"]
     vec_B = kwargs["B"]
+    compressed_mat_A_origin = kwargs["compressed_A_origin"]
     compressed_mat_A = kwargs["compressed_A"]
     idx_mat_A = kwargs["idx_mat_A"]
     idx_vec_B = kwargs["idx_vec_B"]
+    packed_idx_mat_A_origin = kwargs["packed_idx_mat_A_origin"]
     packed_idx_mat_A = kwargs["packed_idx_mat_A"]
     packed_idx_vec_B = kwargs["packed_idx_vec_B"]
     result = kwargs["result"]
@@ -97,13 +100,13 @@ def emit_sparsemv_layer(name="sparsemv", **kwargs):
     dtype = ctypes[str(kwargs["prec"])]
     if dtype != "char":
         layer_str += (
-            f'static {dtype} {name}_A_dram [{m} * {n}] __attribute__((section(".data"))) = '
-            + array_to_cstr(mat_A)
+            f'static {dtype} {name}_B_dram [{n}] __attribute__((section(".data"))) = '
+            + array_to_cstr(vec_B)
             + ";\n\n\n"
         )
         layer_str += (
-            f'static {dtype} {name}_B_dram [{n}] __attribute__((section(".data"))) = '
-            + array_to_cstr(vec_B)
+            f'static {dtype} {name}_compressed_A_dram_origin [{m} * {n//2}] __attribute__((section(".data"))) = '
+            + array_to_cstr(compressed_mat_A_origin)
             + ";\n\n\n"
         )
         layer_str += (
@@ -112,23 +115,8 @@ def emit_sparsemv_layer(name="sparsemv", **kwargs):
             + ";\n\n\n"
         )
         layer_str += (
-            f'static {"int"} {name}_idx_A_dram [{m} * {n//2}] __attribute__((section(".data"))) = '
-            + array_to_cstr(idx_mat_A)
-            + ";\n\n\n"
-        )
-        layer_str += (
-            f'static {"int"} {name}_idx_B_dram [{n//2}] __attribute__((section(".data"))) = '
-            + array_to_cstr(idx_vec_B)
-            + ";\n\n\n"
-        )
-        layer_str += (
             f'static {"int"} {name}_packed_idx_A_dram [{m} * {n//32}] __attribute__((section(".data"))) = '
             + array_to_cstr(packed_idx_mat_A)
-            + ";\n\n\n"
-        )
-        layer_str += (
-            f'static {"int"} {name}_packed_idx_B_dram [{n//32}] __attribute__((section(".data"))) = '
-            + array_to_cstr(packed_idx_vec_B)
             + ";\n\n\n"
         )
         layer_str += (
@@ -219,6 +207,27 @@ def sparse_rand_data_generator(effective_ele_num, unit_len, shape, prec, alt=Fal
 
     return result, result_idx, result_idx_packed, {}
 
+def reorder_result_idx_packed(result_idx_packed: torch.Tensor, M:int, N:int) -> torch.Tensor:
+    flat = result_idx_packed.view(-1)
+    units = flat.view(M//4, 4, N)
+    reordered_units = []
+    for unit in units:
+        reordered_units.append(unit.transpose(0,1).reshape(-1))
+    new_flat = torch.cat(reordered_units, dim=0)
+
+    return new_flat.view(-1,1)
+
+def reorder_result(result: torch.Tensor, M:int, N:int) -> torch.Tensor:
+    flat = result.view(-1)
+    units = flat.view(M//4, 4, N//16, 16)
+    reordered_units = []
+    for unit in units:
+        block = unit.permute(1,0,2).reshape(-1)
+        reordered_units.append(block)
+    new_flat = torch.cat(reordered_units, dim=0)
+
+    return new_flat.view(-1,1)
+
 def sparse_rand_data_generator_int16(effective_ele_num, unit_len, shape, prec, alt=False): #generate sparse vector and its index
     total_elems = functools.reduce(operator.mul, shape, 1)
     if total_elems % unit_len != 0:
@@ -278,18 +287,21 @@ def main():
     with args.cfg.open() as f:
         param = hjson.loads(f.read())
 
-    mat_A, idx_mat_A, packed_idx_mat_A, bits_A = sparse_rand_data_generator_int16(2, 4, (param["M"], param["N"]), param["prec"])
+    mat_A, idx_mat_A, packed_idx_mat_A_origin, bits_A = sparse_rand_data_generator(2, 4, (param["M"], param["N"]), param["prec"])
+    packed_idx_mat_A = reorder_result_idx_packed(packed_idx_mat_A_origin, param["M"], param["N"]//32)
     vec_B, idx_vec_B, packed_idx_vec_B         = mat_A[0:param["N"]], idx_mat_A[0:(param["N"])//2], packed_idx_mat_A[0:(param["N"])//32]
-    compressed_mat_A                           = extract_nonzero(mat_A)
-
+    compressed_mat_A_origin                    = extract_nonzero(mat_A)
+    compressed_mat_A                           = reorder_result(compressed_mat_A_origin, param["M"], param["N"]//2)
     result = gemv(mat_A, vec_B, (param["M"], param["N"]))
 
     kwargs = {
         "A": mat_A,
         "B": vec_B,
+        "compressed_A_origin": compressed_mat_A_origin,
         "compressed_A": compressed_mat_A,
         "idx_mat_A": idx_mat_A,
         "idx_vec_B": idx_vec_B,
+        "packed_idx_mat_A_origin": packed_idx_mat_A_origin,
         "packed_idx_mat_A": packed_idx_mat_A,
         "packed_idx_vec_B": packed_idx_vec_B,
         "result": result,

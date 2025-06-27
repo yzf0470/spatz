@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "data_32.h": "c",
+        "string.h": "c",
+        "functional": "c"
+    },
+    "cmake.sourceDirectory": "/scratch/sem25f5/spatz/sw/riscvTests"
+}

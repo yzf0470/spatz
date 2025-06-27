@@ -18,150 +18,94 @@
 
 #include "gemv.h"
 
-// 29 % util
-// main.c: sparsemv_v64b(a_core, b, idx_a_core, result_core, m_core, sparsemv_l.N/2);
-//
-void sparsemv_m4_v64b(double *a, double* b, int *idx_a, double* c, int M, int N) {
+// 23.0 % util
+void sparsemv_v64b(double *a, double* b, int *idx_a, double* c, int M, int N) {
   unsigned int vl, vl_idx, vl_compressed;
-  int flag = 1;
   unsigned int avl = N;
-  double  *a_ = a     + (M-1) * N;
-  int *idx_a_ = idx_a + (M-1) * N/16;
+  double  *a_ = a;
+  int *idx_a_ = idx_a;
   double  *b_ = b;
+  double *result = c; 
 
-  asm volatile("vmv.s.x v20, zero");
-  asm volatile("vmv.s.x v24, zero");
-
-  for (int r=0; r < M; r++) {
-
+  for (int r = 0; r < M/4; r++) {
     // Stripmine and accumulate a partial reduced vector
     do {
-      // Set the vl
+      // Load indices
+      asm volatile("vsetvli %0, %1, e32, m1, ta, ma" : "=r"(vl_idx) : "r"(1));
+      asm volatile("vle32.v v4, (%0)" ::"r"(idx_a_));
+      idx_a_ += vl_idx;
+      asm volatile("vle32.v v5, (%0)" ::"r"(idx_a_));
+      idx_a_ += vl_idx;
+      asm volatile("vle32.v v6, (%0)" ::"r"(idx_a_));
+      idx_a_ += vl_idx;
+      asm volatile("vle32.v v7, (%0)" ::"r"(idx_a_));
+      idx_a_ += vl_idx;
+
+      // Load B, A1 & A2, and gather
       asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl) : "r"(2*avl));
       asm volatile("vle64.v v0, (%0)" ::"r"(b_));
       b_ += vl;
-
-      asm volatile("vsetvli %0, %1, e32, m4, ta, ma" : "=r"(vl_idx) : "r"(vl/32));
-      asm volatile("vle32.v v4, (%0)" ::"r"(idx_a_)); // idx1
-      idx_a_ += vl_idx;
-      
-      asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl) : "r"(vl));
-      asm volatile("vrgather.vv v8, v0, v4");
-
-      asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl_compressed) : "r"(vl/2));
-      asm volatile("vle64.v v12, (%0)" ::"r"(a_));
-      a_ += vl_compressed;
+      asm volatile("vle64.v v8, (%0)" ::"r"(a_));
+      a_ += vl;
+      asm volatile("vrgather.vv v12, v0, v4");
+      asm volatile("vrgather.vv v14, v0, v5");
 
       // Multiply and accumulate
+      asm volatile("vsetvli %0, %1, e64, m2, ta, ma" : "=r"(vl_compressed) : "r"(vl/2));
       if (avl == N) {
         asm volatile("vfmul.vv v16, v12, v8");
       } else {
         asm volatile("vfmacc.vv v16, v12, v8");
       }
-
-      avl -= vl_compressed;
-
-    } while (avl > 0);
-
-    if (flag) {
-    // Reduce and return
-      asm volatile("vfredusum.vs v20, v16, v20");
-      asm volatile("vfslide1up.vf v24, v20, %0" ::"f"(0.0));
-      flag = 0;
-    } else {
-      asm volatile("vfredusum.vs v24, v16, v24");
-      asm volatile("vfslide1up.vf v20, v24, %0" ::"f"(0.0));
-      flag = 1; 
-    }
-    b_      = b  ;
-    a_     -= 2*N;
-    idx_a_ -= N/8;
-    avl = N;
-  }
-  
-  asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl) : "r"(M));
-  if (flag) {
-    asm volatile("vse64.v v24, (%0)" ::"r"(c));
-  } else {
-    asm volatile("vse64.v v20, (%0)" ::"r"(c));
-  }
-}
-
-void sparsemv_m4_v64b_v2(double *a, double* b, int *idx_a, double* c, int M, int N) {
-  unsigned int vl, vl_idx, vl_compressed;
-  unsigned int avl = N;
-  double  *a_ = a     + (M-2) * N;
-  double  *a2_;
-  int *idx_a_ = idx_a + (M-2) * N/16;
-  int *idx_a2_;
-  double  *b_ = b;
-  double  *c_ = c;
-
-  for (int r=0; r < M/2; r++) {
-    // Stripmine and accumulate a partial reduced vector
-    do {
-      a2_ = a_ + N;
-      idx_a2_ = idx_a_ + N/16;
-
-      // Set the vl
-      asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl) : "r"(2*avl));
-      asm volatile("vle64.v v0, (%0)" ::"r"(b_));
-      b_ += vl;
-
-      asm volatile("vsetvli %0, %1, e32, m4, ta, ma" : "=r"(vl_idx) : "r"(vl/32));
-      asm volatile("vle32.v v4, (%0)" ::"r"(idx_a_)); // idx1
-      idx_a_ += vl_idx;
+      if (avl == N) {
+        asm volatile("vfmul.vv v18, v14, v10");
+      } else {
+        asm volatile("vfmacc.vv v18, v14, v10");
+      }
       
+      // Load A3 & A4, and gather
       asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl) : "r"(vl));
-      asm volatile("vrgather.vv v8, v0, v4");
-
-      asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl_compressed) : "r"(vl/2));
-      asm volatile("vle64.v v12, (%0)" ::"r"(a_));
-      a_ += vl_compressed;
+      asm volatile("vle64.v v20, (%0)" ::"r"(a_));
+      a_ += vl;
+      asm volatile("vrgather.vv v24, v0, v6");
+      asm volatile("vrgather.vv v26, v0, v7");
 
       // Multiply and accumulate
+      asm volatile("vsetvli %0, %1, e64, m2, ta, ma" : "=r"(vl_compressed) : "r"(vl/2));
       if (avl == N) {
-        asm volatile("vfmul.vv v24, v12, v8");
+        asm volatile("vfmul.vv v28, v24, v20");
       } else {
-        asm volatile("vfmacc.vv v24, v12, v8");
+        asm volatile("vfmacc.vv v28, v24, v20");
+      }
+      if (avl == N) {
+        asm volatile("vfmul.vv v30, v26, v22");
+      } else {
+        asm volatile("vfmacc.vv v30, v26, v22");
       }
 
-      asm volatile("vsetvli %0, %1, e32, m4, ta, ma" : "=r"(vl_idx) : "r"(vl_idx));
-      asm volatile("vle32.v v16, (%0)" ::"r"(idx_a2_)); // idx1
-      idx_a2_ += vl_idx;
-      
-      asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl) : "r"(vl));
-      asm volatile("vrgather.vv v20, v0, v16"); //??????????!!
-
-      asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl_compressed) : "r"(vl_compressed));
-      asm volatile("vle64.v v12, (%0)" ::"r"(a2_));
-      a2_ += vl_compressed;
-
-      // Multiply and accumulate
-      if (avl == N) {
-        asm volatile("vfmul.vv v28, v12, v20");
-      } else {
-        asm volatile("vfmacc.vv v28, v12, v20");
-      }
-
-      avl -= vl_compressed;
-
+      avl -= vl/2;
     } while (avl > 0);
     
+    asm volatile("vfmv.s.f v0, %0" ::"f"(0.0));
     asm volatile("vfmv.s.f v4, %0" ::"f"(0.0));
-    asm volatile("vfmv.s.f v16, %0" ::"f"(0.0));
+    asm volatile("vfmv.s.f v8, %0" ::"f"(0.0));
+    asm volatile("vfmv.s.f v12, %0" ::"f"(0.0));
 
     // Reduce and return
-    asm volatile("vfredusum.vs v4, v28, v4");
-    asm volatile("vfslide1up.vf v16, v4, %0" ::"f"(0.0));
-    asm volatile("vfredusum.vs v16, v24, v16");
-    asm volatile("vfslide1up.vf v4, v16, %0" ::"f"(0.0));
+    asm volatile("vfredusum.vs v0, v16, v0");
+    asm volatile("vfmv.f.s %0, v0" : "=f"(*result));
+    result += 1;
+    asm volatile("vfredusum.vs v4, v18, v4");
+    asm volatile("vfmv.f.s %0, v4" : "=f"(*result));
+    result += 1;
+    asm volatile("vfredusum.vs v8, v28, v8");
+    asm volatile("vfmv.f.s %0, v8" : "=f"(*result));
+    result += 1;
+    asm volatile("vfredusum.vs v12, v30, v12");
+    asm volatile("vfmv.f.s %0, v12" : "=f"(*result));
+    result += 1;
+
     b_ = b;
-    a_ -= (3*N);
-    idx_a_ -= 3*N/16;
     avl = N;
   }
-  
-  asm volatile("vsetvli %0, %1, e64, m4, ta, ma" : "=r"(vl) : "r"(M));
-  asm volatile("vse64.v v16,  (%0)" ::"r"(c));
 }

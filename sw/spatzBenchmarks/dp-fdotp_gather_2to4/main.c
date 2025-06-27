@@ -87,8 +87,8 @@ int main() {
 
   // Calculate dotp
   double acc;
-  //acc = fdotp_v64b(a, b, idx_a, sparse_l.M);
-  acc = fdotp_slide_v64b(a_int, b_int, idx_a_int, dim);
+  acc = fdotp_v64b(a, b, idx_a, sparse_l.M);
+  //acc = fdotp_slide_v64b(a_int, b_int, idx_a_int, dim);
   result[cid] = acc;
 
   // Wait for all cores to finish

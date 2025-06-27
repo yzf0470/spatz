@@ -94,8 +94,7 @@ int main() {
 
   // Calculate gemv
   if (sizeof(T) == 8)
-    //sparsemv_m4_v64b_v2(a_core, b, idx_a_core, result_core, m_core, sparsemv_l.N/2);
-    sparsemv_m4_v64b(a_core, b, idx_a_core, result_core, m_core, sparsemv_l.N/2);
+    sparsemv_v64b(a_core, b, idx_a_core, result_core, m_core, sparsemv_l.N/2);
   else if (sizeof(T) == 4)
     sparsemv_v32b(a_core, b, idx_a_core, result_core, m_core, sparsemv_l.N/2);
   else 

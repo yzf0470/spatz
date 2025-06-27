@@ -6,8 +6,8 @@
 
 {
     kernel: "GEMV"
-    M: 32,
-    N: 256,
+    M: 8,
+    N: 64,
     transpose_A: false,
     transpose_B: false,
     prec: 64,

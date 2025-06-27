@@ -13,4 +13,4 @@ typedef struct gemv_layer_struct {
     uint32_t N;
   
     precision_t dtype;
-  } sparsemv_layer;
+  } gemv_layer;

@@ -35,7 +35,6 @@
 
 T *a;
 T *b;
-short *idx_a;
 T *result;
 
 static inline int fp_check(const T a, const T b) {
@@ -55,21 +54,19 @@ int main() {
   
   // Reset timer
   unsigned int timer = (unsigned int)-1;
-  const unsigned int m_core = sparsemv_l.M / num_cores;
+  const unsigned int m_core = gemv_l.M / num_cores;
 
   // Allocate the matrices
   if (cid == 0) {
-    a = (T *)snrt_l1alloc(sparsemv_l.M * sparsemv_l.N/2 * sizeof(T));
-    b = (T *)snrt_l1alloc(sparsemv_l.N * sizeof(T));
-    idx_a  = (short *)snrt_l1alloc(sparsemv_l.M * sparsemv_l.N/16 * sizeof(short));
-    result = (T *)snrt_l1alloc(sparsemv_l.M * sizeof(T));
+    a = (T *)snrt_l1alloc(gemv_l.M * gemv_l.N * sizeof(T));
+    b = (T *)snrt_l1alloc(gemv_l.N * sizeof(T));
+    result = (T *)snrt_l1alloc(gemv_l.M * sizeof(T));
   }
 
   // Initialize the matrices
   if (cid == 0) {
-    snrt_dma_start_1d(a, sparsemv_compressed_A_dram, sparsemv_l.M * sparsemv_l.N/2 * sizeof(T));
-    snrt_dma_start_1d(b, sparsemv_B_dram, sparsemv_l.N * sizeof(T));
-    snrt_dma_start_1d(idx_a, sparsemv_packed_idx_A_dram, sparsemv_l.M * sparsemv_l.N/16 * sizeof(short));
+    snrt_dma_start_1d(a, gemv_A_dram, gemv_l.M * gemv_l.N * sizeof(T));
+    snrt_dma_start_1d(b, gemv_B_dram, gemv_l.N * sizeof(T));
     snrt_dma_wait_all();
   }
 
@@ -77,8 +74,7 @@ int main() {
   snrt_cluster_hw_barrier();
   
   // Calculate internal pointers
-  T *a_core = a + sparsemv_l.N/2 * m_core * cid;
-  T *idx_a_core = idx_a + sparsemv_l.N/16 * m_core * cid;
+  T *a_core = a + gemv_l.N * m_core * cid;
   T *result_core = result + m_core * cid;
 
   // Wait for all cores to finish
@@ -94,11 +90,11 @@ int main() {
 
   // Calculate gemv
   if (sizeof(T) == 8)
-    sparsemv_m2_v64b(a_core, b, idx_a_core, result_core, m_core, sparsemv_l.N/2);
+    gemv_v64b(a_core, b, result_core, m_core, gemv_l.N);
   else if (sizeof(T) == 4)
-    sparsemv_v32b(a_core, b, idx_a_core, result_core, m_core, sparsemv_l.N/2);
+    gemv_v32b(a_core, b, result_core, m_core, gemv_l.N);
   else 
-    sparsemv_v16b(a_core, b, idx_a_core, result_core, m_core, sparsemv_l.N/2);
+    gemv_v16b(a_core, b, result_core, m_core, gemv_l.N);
 
   // Wait for all cores to finish
   snrt_cluster_hw_barrier();
@@ -113,21 +109,21 @@ int main() {
 
   // Check and display results
   if (cid == 0) {
-    long unsigned int performance = 1000 * 2 * sparsemv_l.M * sparsemv_l.N / timer;
+    long unsigned int performance = 1000 * 2 * gemv_l.M * gemv_l.N / timer;
     long unsigned int utilization =
         performance / (2 * num_cores * SNRT_NFPU_PER_CORE * (8 / sizeof(T)));
 
-    printf("\n----- (%d x %d) x (%d x 1) sparsemv -----\n", sparsemv_l.M, sparsemv_l.N, sparsemv_l.N);
+    printf("\n----- (%d x %d) x (%d x 1) gemv -----\n", gemv_l.M, gemv_l.N, gemv_l.N);
     printf("The execution took %u cycles.\n", timer);
     printf("The performance is %ld OP/1000cycle (%ld%%o utilization).\n",
            performance, utilization);
   }
 
   if (cid == 0) {
-    for (int i = 0; i < sparsemv_l.M; i++) {
-      if (fp_check(result[i], sparsemv_result[i])) {
-        printf("Error: ID: %i Result = %f, Golden = %f\n", i, result[i], sparsemv_result[i]);
-        //return -1;
+    for (int i = 0; i < gemv_l.M; i++) {
+      if (fp_check(result[i], gemv_result[i])) {
+        printf("Error: ID: %i Result = %f, Golden = %f\n", i, result[i], gemv_result[i]);
+        return -1;
       }
     }
   }
